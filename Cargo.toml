@@ -10,8 +10,8 @@ env_logger = "0.10"
 log = "0.4"
 wgpu = "28.0"
 pollster = "0.3"
-bytemuck = "1.25.0"
-cgmath = "0.18"
+bytemuck = { version = "1.25.0", features = ["derive"] }
+glam = { version = "0.32.1", features = ["bytemuck"] }
 tobj = { version = "4.0.3", default-features = false, features = ["async"]}
 instant = "0.1"
 

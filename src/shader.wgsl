@@ -6,9 +6,10 @@ struct InstanceInput {
     @location(7) model_matrix_2: vec4<f32>,
     @location(8) model_matrix_3: vec4<f32>,
     // Normal
-    @location(9) normal_matrix_0: vec3<f32>,
-    @location(10) normal_matrix_1: vec3<f32>,
-    @location(11) normal_matrix_2: vec3<f32>,
+    @location(9) normal_matrix_0: vec4<f32>,
+    @location(10) normal_matrix_1: vec4<f32>,
+    @location(11) normal_matrix_2: vec4<f32>,
+    @location(12) normal_matrix_3: vec4<f32>,
 }
 
 struct Camera {
@@ -53,9 +54,9 @@ fn vs_main(
         instance.model_matrix_3,
     );
     let normal_matrix = mat3x3<f32>(
-        instance.normal_matrix_0,
-        instance.normal_matrix_1,
-        instance.normal_matrix_2,
+        instance.normal_matrix_0.xyz,
+        instance.normal_matrix_1.xyz,
+        instance.normal_matrix_2.xyz,
     );
 
     // Construct the tangent matrix

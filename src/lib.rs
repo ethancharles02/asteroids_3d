@@ -3,8 +3,9 @@ mod model;
 mod resources;
 mod texture;
 
+use std::mem;
 use model::{Vertex, Model, DrawModel, DrawLight};
-use cgmath::prelude::*;
+use glam::{Mat4, Quat, Vec3};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -29,7 +30,7 @@ struct LightUniform {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct InstanceRaw {
     model: [[f32; 4]; 4],
-    normal: [[f32; 3]; 3],
+    normal: [[f32; 4]; 4],
 }
 
 impl InstanceRaw {
@@ -43,12 +44,8 @@ impl InstanceRaw {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
                 // Model
-                // A mat4 takes up 4 vertex slots as it is technically 4 vec4s. We need to define a slot
-                // for each vec4. We'll have to reassemble the mat4 in the shader.
                 wgpu::VertexAttribute {
                     offset: 0,
-                    // While our vertex shader only uses locations 0, and 1 now, in later tutorials, we'll
-                    // be using 2, 3, and 4, for Vertex. We'll start at slot 5, not conflict with them later
                     shader_location: 5,
                     format: wgpu::VertexFormat::Float32x4,
                 },
@@ -67,21 +64,26 @@ impl InstanceRaw {
                     shader_location: 8,
                     format: wgpu::VertexFormat::Float32x4,
                 },
-                // Normal
+                // Normal (includes a 4th column for memory alignment purposes)
                 wgpu::VertexAttribute {
                     offset: mem::size_of::<[f32; 16]>() as wgpu::BufferAddress,
                     shader_location: 9,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
                 wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 19]>() as wgpu::BufferAddress,
+                    offset: mem::size_of::<[f32; 20]>() as wgpu::BufferAddress,
                     shader_location: 10,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
                 wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 22]>() as wgpu::BufferAddress,
+                    offset: mem::size_of::<[f32; 24]>() as wgpu::BufferAddress,
                     shader_location: 11,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 28]>() as wgpu::BufferAddress,
+                    shader_location: 12,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
             ],
         }
@@ -89,18 +91,15 @@ impl InstanceRaw {
 }
 
 struct Instance {
-    position: cgmath::Vector3<f32>,
-    rotation: cgmath::Quaternion<f32>,
+    position: Vec3,
+    rotation: Quat,
 }
 
 impl Instance {
     fn to_raw(&self) -> InstanceRaw {
-        let model =
-            cgmath::Matrix4::from_translation(self.position) * cgmath::Matrix4::from(self.rotation);
-
         InstanceRaw {
-            model: model.into(),
-            normal: cgmath::Matrix3::from(self.rotation).into(),
+            model: (Mat4::from_translation(self.position) * Mat4::from_quat(self.rotation)).to_cols_array_2d(),
+            normal: Mat4::from_quat(self.rotation).to_cols_array_2d(),
         }
     }
 }
@@ -116,16 +115,15 @@ struct CameraUniform {
 
 impl CameraUniform {
     fn new() -> Self {
-        use cgmath::SquareMatrix;
         Self {
             view_position: [0.0; 4],
-            view_proj: cgmath::Matrix4::identity().into(),
+            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
         }
     }
 
     fn update_view_proj(&mut self, camera: &camera::Camera, projection: &camera::Projection) {
         self.view_position = camera.position.to_homogeneous().into();
-        self.view_proj = (projection.calc_matrix() * camera.calc_matrix()).into();
+        self.view_proj = (projection.calc_matrix() * camera.calc_matrix()).to_cols_array_2d();
     }
 }
 
@@ -323,8 +321,8 @@ impl State {
             &device,
         );
 
-        let camera = camera::Camera::new((0.0, 5.0, 10.0), cgmath::Deg(-90.0), cgmath::Deg(-20.0));
-        let projection = camera::Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
+        let camera = camera::Camera::new((0.0, 5.0, 10.0), -90.0_f32.to_radians(), -20.0_f32.to_radians());
+        let projection = camera::Projection::new(config.width, config.height, 45.0_f32.to_radians(), 0.1, 100.0);
         let camera_controller = camera::CameraController::new(4.0, 0.4);
 
         let mut camera_uniform = CameraUniform::new();
@@ -447,8 +445,8 @@ impl State {
         // }).collect::<Vec<_>>();
         let mut instances = Vec::new();
         instances.push(Instance {
-            position: cgmath::Vector3 { x: 0.0, y: 0.0, z: 0.0},
-            rotation: cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0)),
+            position: Vec3 { x: 0.0, y: 0.0, z: 0.0},
+            rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
         });
 
         let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
@@ -456,7 +454,7 @@ impl State {
             &wgpu::util::BufferInitDescriptor {
                 label: Some("Instance Buffer"),
                 contents: bytemuck::cast_slice(&instance_data),
-                usage: wgpu::BufferUsages::VERTEX,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             }
         );
 
@@ -553,11 +551,17 @@ impl State {
         self.camera_uniform.update_view_proj(&self.camera, &self.projection);
 
         // Update the light
-        let old_position: cgmath::Vector3<_> = self.light_uniform.position.into();
+        let old_position = Vec3::from_array(self.light_uniform.position);
         self.light_uniform.position =
-            (cgmath::Quaternion::from_axis_angle((0.0, 1.0, 0.0).into(), cgmath::Deg(60.0 * dt.as_secs_f32()))
+            (Quat::from_axis_angle(Vec3::Y, (60.0 * dt.as_secs_f32()).to_radians())
                 * old_position)
                 .into();
+
+        let speed = 60.0_f32.to_radians();
+        let rotate = Quat::from_axis_angle(Vec3::Y, speed * dt.as_secs_f32());
+        self.instances[0].rotation = (rotate * self.instances[0].rotation).normalize();
+
+        self.queue.write_buffer(&self.instance_buffer, (0 * mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress, bytemuck::bytes_of(&self.instances[0].to_raw()));
         self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[self.light_uniform]));
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
     }
@@ -678,8 +682,6 @@ impl ApplicationHandler<State> for App {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // If we are not on web we can use pollster to
-            // await the
             self.state = Some(pollster::block_on(State::new(window)).unwrap());
         }
 
