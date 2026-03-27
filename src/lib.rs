@@ -214,7 +214,7 @@ impl State {
             });
 
         let obj_model =
-            resources::load_model("Spaceship.obj", &device, &queue, &texture_bind_group_layout)
+            resources::load_model("Asteroid.obj", &device, &queue, &texture_bind_group_layout)
                 .unwrap();
 
         let (vertices, indices) = resources::generate_cube(1.0);
