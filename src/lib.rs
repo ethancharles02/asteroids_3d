@@ -5,7 +5,7 @@ mod texture;
 
 use std::mem;
 use model::{Vertex, Model, DrawModel, DrawLight};
-use glam::{Mat4, Quat, Vec3};
+use glam::{Quat, Vec3};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -24,107 +24,6 @@ struct LightUniform {
     color: [f32; 3],
     // Due to uniforms requiring 16 byte (4 float) spacing, we need to use a padding field here
     _padding2: u32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct InstanceRaw {
-    model: [[f32; 4]; 4],
-    normal: [[f32; 4]; 4],
-}
-
-impl InstanceRaw {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<InstanceRaw>() as wgpu::BufferAddress,
-            // We need to switch from using a step mode of Vertex to Instance
-            // This means that our shaders will only change to use the next
-            // instance when the shader starts processing a new instance
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                // Model
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
-                    shader_location: 6,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
-                    shader_location: 7,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
-                    shader_location: 8,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                // Normal (includes a 4th column for memory alignment purposes)
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 16]>() as wgpu::BufferAddress,
-                    shader_location: 9,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 20]>() as wgpu::BufferAddress,
-                    shader_location: 10,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 24]>() as wgpu::BufferAddress,
-                    shader_location: 11,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 28]>() as wgpu::BufferAddress,
-                    shader_location: 12,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
-        }
-    }
-}
-
-struct Instance {
-    position: Vec3,
-    rotation: Quat,
-}
-
-impl Instance {
-    fn to_raw(&self) -> InstanceRaw {
-        InstanceRaw {
-            model: (Mat4::from_translation(self.position) * Mat4::from_quat(self.rotation)).to_cols_array_2d(),
-            normal: Mat4::from_quat(self.rotation).to_cols_array_2d(),
-        }
-    }
-}
-
-// We need this for Rust to store our data correctly for the shaders
-#[repr(C)]
-// This is so we can store this in a buffer
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CameraUniform {
-    view_position: [f32; 4],
-    view_proj: [[f32; 4]; 4],
-}
-
-impl CameraUniform {
-    fn new() -> Self {
-        Self {
-            view_position: [0.0; 4],
-            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-        }
-    }
-
-    fn update_view_proj(&mut self, camera: &camera::Camera, projection: &camera::Projection) {
-        self.view_position = camera.position.to_homogeneous().into();
-        self.view_proj = (projection.calc_matrix() * camera.calc_matrix()).to_cols_array_2d();
-    }
 }
 
 fn create_render_pipeline(
@@ -196,20 +95,25 @@ pub struct State {
     camera: camera::Camera,
     projection: camera::Projection,
     camera_controller: camera::CameraController,
-    camera_uniform: CameraUniform,
+    camera_uniform: camera::CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     light_model: Model,
     light_uniform: LightUniform,
     light_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
-    instances: Vec<Instance>,
+    instances: Vec<model::Instance>,
     instance_buffer: wgpu::Buffer,
-    mouse_pressed: bool,
 }
 
 impl State {
     async fn new(window: Arc<Window>) -> anyhow::Result<State> {
+        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        window.set_cursor_visible(false);
+        window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined))
+            .unwrap_or_else(|e| eprintln!("Failed to grab cursor: {:?}", e));
+
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -323,9 +227,9 @@ impl State {
 
         let camera = camera::Camera::new((0.0, 5.0, 10.0), -90.0_f32.to_radians(), -20.0_f32.to_radians());
         let projection = camera::Projection::new(config.width, config.height, 45.0_f32.to_radians(), 0.1, 100.0);
-        let camera_controller = camera::CameraController::new(4.0, 0.4);
+        let camera_controller = camera::CameraController::new(4.0, 1.0);
 
-        let mut camera_uniform = CameraUniform::new();
+        let mut camera_uniform = camera::CameraUniform::new();
         camera_uniform.update_view_proj(&camera, &projection);
         let camera_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
@@ -444,12 +348,12 @@ impl State {
         //     })
         // }).collect::<Vec<_>>();
         let mut instances = Vec::new();
-        instances.push(Instance {
+        instances.push(model::Instance {
             position: Vec3 { x: 0.0, y: 0.0, z: 0.0},
             rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
         });
 
-        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        let instance_data = instances.iter().map(model::Instance::to_raw).collect::<Vec<_>>();
         let instance_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: Some("Instance Buffer"),
@@ -482,7 +386,7 @@ impl State {
                 &render_pipeline_layout,
                 config.format,
                 Some(texture::Texture::DEPTH_FORMAT),
-                &[model::ModelVertex::desc(), InstanceRaw::desc()],
+                &[model::ModelVertex::desc(), model::InstanceRaw::desc()],
                 shader
             )
         };
@@ -510,7 +414,6 @@ impl State {
             light_bind_group,
             instances,
             instance_buffer,
-            mouse_pressed: false,
         })
     }
 
@@ -536,7 +439,7 @@ impl State {
 
     fn handle_mouse_button(&mut self, button: MouseButton, pressed: bool) {
         match button {
-            MouseButton::Left => self.mouse_pressed = pressed,
+            // MouseButton::Left => self.mouse_pressed = pressed,
             _ => {}
         }
     }
@@ -557,11 +460,11 @@ impl State {
                 * old_position)
                 .into();
 
-        let speed = 60.0_f32.to_radians();
+        let speed = 0.0_f32.to_radians();
         let rotate = Quat::from_axis_angle(Vec3::Y, speed * dt.as_secs_f32());
         self.instances[0].rotation = (rotate * self.instances[0].rotation).normalize();
 
-        self.queue.write_buffer(&self.instance_buffer, (0 * mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress, bytemuck::bytes_of(&self.instances[0].to_raw()));
+        self.queue.write_buffer(&self.instance_buffer, (0 * mem::size_of::<model::InstanceRaw>()) as wgpu::BufferAddress, bytemuck::bytes_of(&self.instances[0].to_raw()));
         self.queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&[self.light_uniform]));
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
     }
@@ -727,9 +630,7 @@ impl ApplicationHandler<State> for App {
         };
         match event {
             DeviceEvent::MouseMotion { delta: (dx, dy) } => {
-                if state.mouse_pressed {
-                    state.camera_controller.handle_mouse(dx, dy);
-                }
+                state.camera_controller.handle_mouse(dx, dy);
             }
             _ => {}
         }
