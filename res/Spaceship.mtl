@@ -9,9 +9,6 @@ d 1.000000
 illum 2
 map_Bump BASE_Normal_DirectX.png
 map_Kd BASE_Base_color.png
-map_Ns BASE_Roughness.png
-map_refl BASE_Metallic.png
-map_Ke BASE_Emissive.png
 
 newmtl WINGS
 Ka 1.000000 1.000000 1.000000
@@ -21,6 +18,3 @@ d 1.000000
 illum 2
 map_Bump WINGS_Normal_DirectX.png
 map_Kd WINGS_Base_color.png
-map_Ns WINGS_Roughness.png
-map_refl WINGS_Metallic.png
-map_Ke WINGS_Emissive.png

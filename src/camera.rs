@@ -19,20 +19,32 @@ const SAFE_FRAC_PI_2: f32 = FRAC_PI_2 - 0.0001;
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     view_position: [f32; 4],
+    view: [[f32; 4]; 4],
     view_proj: [[f32; 4]; 4],
+    inv_proj: [[f32; 4]; 4],
+    inv_view: [[f32; 4]; 4],
 }
 
 impl CameraUniform {
     pub fn new() -> Self {
         Self {
             view_position: [0.0; 4],
+            view: Mat4::IDENTITY.to_cols_array_2d(),
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            inv_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            inv_view: Mat4::IDENTITY.to_cols_array_2d(),
         }
     }
 
     pub fn update_view_proj(&mut self, camera: &Camera, projection: &Projection) {
         self.view_position = camera.position.to_homogeneous().into();
-        self.view_proj = (projection.calc_matrix() * camera.calc_matrix()).to_cols_array_2d();
+        let proj = projection.calc_matrix();
+        let view = camera.calc_matrix();
+        let view_proj = proj * view;
+        self.view = view.to_cols_array_2d();
+        self.view_proj = view_proj.to_cols_array_2d();
+        self.inv_proj = proj.inverse().to_cols_array_2d();
+        self.inv_view = view.transpose().to_cols_array_2d();
     }
 }
 

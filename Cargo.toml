@@ -8,7 +8,7 @@ anyhow = "1.0"
 winit = { version = "0.30", features = ["android-native-activity"] }
 env_logger = "0.10"
 log = "0.4"
-wgpu = "28.0"
+wgpu = "29.0"
 pollster = "0.3"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 glam = { version = "0.32.1", features = ["bytemuck"] }
@@ -18,7 +18,7 @@ instant = "0.1"
 [dependencies.image]
 version = "0.24"
 default-features = false
-features = ["png", "jpeg"]
+features = ["png", "jpeg", "hdr"]
 
 [build-dependencies]
 anyhow = "1.0"
