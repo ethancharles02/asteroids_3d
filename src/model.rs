@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range};
 use glam::{Mat4, Quat, Vec3};
 
 use crate::texture;
@@ -67,6 +67,7 @@ impl InstanceRaw {
     }
 }
 
+#[derive(Clone, Default)]
 pub struct Instance {
     pub position: Vec3,
     pub rotation: Quat,

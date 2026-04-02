@@ -1,9 +1,11 @@
 use std::f32::consts::FRAC_PI_2;
 use std::time::Duration;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Mat3, Vec3, Quat, EulerRot};
 use winit::dpi::PhysicalPosition;
 use winit::event::*;
 use winit::keyboard::KeyCode;
+
+use crate::model;
 
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
@@ -51,8 +53,8 @@ impl CameraUniform {
 #[derive(Debug)]
 pub struct Camera {
     pub position: Vec3,
-    yaw: f32,
-    pitch: f32,
+    pub yaw: f32,
+    pub pitch: f32,
 }
 
 impl Camera {
@@ -133,10 +135,11 @@ pub struct CameraController {
     scroll: f32,
     speed: f32,
     sensitivity: f32,
+    is_free: bool,
 }
 
 impl CameraController {
-    pub fn new(speed: f32, sensitivity: f32) -> Self {
+    pub fn new(speed: f32, sensitivity: f32, is_free: bool) -> Self {
         Self {
             amount_left: 0.0,
             amount_right: 0.0,
@@ -149,94 +152,135 @@ impl CameraController {
             scroll: 0.0,
             speed,
             sensitivity,
+            is_free: is_free,
         }
     }
 
     pub fn handle_key(&mut self, key: KeyCode, pressed: bool) -> bool {
-        let amount = if pressed { 1.0 } else { 0.0 };
-        match key {
-            KeyCode::KeyW | KeyCode::ArrowUp => {
-                self.amount_forward = amount;
-                true
+        if key == KeyCode::KeyV && pressed {
+            // Make sure to reset any values so they don't stay active while in locked mode
+            if self.is_free {
+                self.reset_active_changes();
             }
-            KeyCode::KeyS | KeyCode::ArrowDown => {
-                self.amount_backward = amount;
-                true
+            self.is_free = !self.is_free;
+        }
+        if self.is_free {
+            let amount = if pressed { 1.0 } else { 0.0 };
+            match key {
+                KeyCode::KeyW | KeyCode::ArrowUp => {
+                    self.amount_forward = amount;
+                    return true;
+                }
+                KeyCode::KeyS | KeyCode::ArrowDown => {
+                    self.amount_backward = amount;
+                    return true;
+                }
+                KeyCode::KeyA | KeyCode::ArrowLeft => {
+                    self.amount_left = amount;
+                    return true;
+                }
+                KeyCode::KeyD | KeyCode::ArrowRight => {
+                    self.amount_right = amount;
+                    return true;
+                }
+                KeyCode::Space => {
+                    self.amount_up = amount;
+                    return true;
+                }
+                KeyCode::ShiftLeft => {
+                    self.amount_down = amount;
+                    return true;
+                }
+                _ => {
+                    return false;
+                }
             }
-            KeyCode::KeyA | KeyCode::ArrowLeft => {
-                self.amount_left = amount;
-                true
-            }
-            KeyCode::KeyD | KeyCode::ArrowRight => {
-                self.amount_right = amount;
-                true
-            }
-            KeyCode::Space => {
-                self.amount_up = amount;
-                true
-            }
-            KeyCode::ShiftLeft => {
-                self.amount_down = amount;
-                true
-            }
-            _ => false,
+        } else {
+            return false;
         }
     }
 
+    fn reset_active_changes(&mut self) {
+        self.amount_left = 0.0;
+        self.amount_right = 0.0;
+        self.amount_forward = 0.0;
+        self.amount_backward = 0.0;
+        self.amount_up = 0.0;
+        self.amount_down = 0.0;
+        self.rotate_horizontal = 0.0;
+        self.rotate_vertical = 0.0;
+    }
+
     pub fn handle_mouse(&mut self, mouse_dx: f64, mouse_dy: f64) {
-        self.rotate_horizontal = mouse_dx as f32;
-        self.rotate_vertical = mouse_dy as f32;
+        if self.is_free {
+            self.rotate_horizontal = mouse_dx as f32;
+            self.rotate_vertical = mouse_dy as f32;
+        }
     }
 
     pub fn handle_scroll(&mut self, delta: &MouseScrollDelta) {
-        self.scroll = -match delta {
-            // I'm assuming a line is about 100 pixels
-            MouseScrollDelta::LineDelta(_, scroll) => scroll * 100.0,
-            MouseScrollDelta::PixelDelta(PhysicalPosition {
-                y: scroll,
-                ..
-            }) => *scroll as f32,
-        };
+        if self.is_free {
+            self.scroll = -match delta {
+                // I'm assuming a line is about 100 pixels
+                MouseScrollDelta::LineDelta(_, scroll) => scroll * 100.0,
+                MouseScrollDelta::PixelDelta(PhysicalPosition {
+                    y: scroll,
+                    ..
+                }) => *scroll as f32,
+            };
+        }
     }
 
-    pub fn update_camera(&mut self, camera: &mut Camera, dt: Duration) {
-        let dt = dt.as_secs_f32();
+    pub fn update_camera(&mut self, camera: &mut Camera, spaceship: &model::Instance, dt: Duration) {
+        if self.is_free {
+            let dt = dt.as_secs_f32();
 
-        // Move forward/backward and left/right
-        let (yaw_sin, yaw_cos) = camera.yaw.sin_cos();
-        let forward = Vec3::new(yaw_cos, 0.0, yaw_sin).normalize();
-        let right = Vec3::new(-yaw_sin, 0.0, yaw_cos).normalize();
-        camera.position += forward * (self.amount_forward - self.amount_backward) * self.speed * dt;
-        camera.position += right * (self.amount_right - self.amount_left) * self.speed * dt;
+            // Move forward/backward and left/right
+            let (yaw_sin, yaw_cos) = camera.yaw.sin_cos();
+            let forward = Vec3::new(yaw_cos, 0.0, yaw_sin).normalize();
+            let right = Vec3::new(-yaw_sin, 0.0, yaw_cos).normalize();
+            camera.position += forward * (self.amount_forward - self.amount_backward) * self.speed * dt;
+            camera.position += right * (self.amount_right - self.amount_left) * self.speed * dt;
 
-        // Move in/out (aka. "zoom")
-        // Note: this isn't an actual zoom. The camera's position
-        // changes when zooming. I've added this to make it easier
-        // to get closer to an object you want to focus on.
-        let (pitch_sin, pitch_cos) = camera.pitch.sin_cos();
-        let scrollward = Vec3::new(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
-        camera.position += scrollward * self.scroll * self.speed * self.sensitivity * dt;
-        self.scroll = 0.0;
+            // Move in/out (aka. "zoom")
+            // Note: this isn't an actual zoom. The camera's position
+            // changes when zooming. I've added this to make it easier
+            // to get closer to an object you want to focus on.
+            let (pitch_sin, pitch_cos) = camera.pitch.sin_cos();
+            let scrollward = Vec3::new(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
+            camera.position += scrollward * self.scroll * self.speed * self.sensitivity * dt;
+            self.scroll = 0.0;
 
-        // Move up/down. Since we don't use roll, we can just
-        // modify the y coordinate directly.
-        camera.position.y += (self.amount_up - self.amount_down) * self.speed * dt;
+            // Move up/down. Since we don't use roll, we can just
+            // modify the y coordinate directly.
+            camera.position.y += (self.amount_up - self.amount_down) * self.speed * dt;
 
-        // Rotate
-        camera.yaw += self.rotate_horizontal * self.sensitivity * dt;
-        camera.pitch += -self.rotate_vertical * self.sensitivity * dt;
+            // Rotate
+            camera.yaw += self.rotate_horizontal * self.sensitivity * dt;
+            camera.pitch += -self.rotate_vertical * self.sensitivity * dt;
 
-        // If process_mouse isn't called every frame, these values
-        // will not get set to zero, and the camera will rotate
-        // when moving in a non-cardinal direction.
-        self.rotate_horizontal = 0.0;
-        self.rotate_vertical = 0.0;
+            // If process_mouse isn't called every frame, these values
+            // will not get set to zero, and the camera will rotate
+            // when moving in a non-cardinal direction.
+            self.rotate_horizontal = 0.0;
+            self.rotate_vertical = 0.0;
 
-        // Keep the camera's angle from going too high/low.
-        if camera.pitch < -SAFE_FRAC_PI_2 {
-            camera.pitch = -SAFE_FRAC_PI_2;
-        } else if camera.pitch > SAFE_FRAC_PI_2 {
-            camera.pitch = SAFE_FRAC_PI_2;
+            // Keep the camera's angle from going too high/low.
+            if camera.pitch < -SAFE_FRAC_PI_2 {
+                camera.pitch = -SAFE_FRAC_PI_2;
+            } else if camera.pitch > SAFE_FRAC_PI_2 {
+                camera.pitch = SAFE_FRAC_PI_2;
+            }
+        } else {
+            let forward = spaceship.rotation * Vec3::Z;
+            camera.position = spaceship.position + (forward * -15.0) + (Vec3::new(0.0, 10.0, 0.0));
+            // Rotate 90 degrees to the right and 22.5 degrees down
+            let offset_rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2) *
+                                        Quat::from_rotation_x(-std::f32::consts::FRAC_PI_8);
+            let corrected_rotation = spaceship.rotation * offset_rotation;
+            let (yaw, pitch, _roll) = Mat3::from_quat(corrected_rotation).to_euler(EulerRot::YXZ);
+            camera.yaw = yaw;
+            camera.pitch = pitch;
         }
     }
 }

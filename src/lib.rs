@@ -1,7 +1,8 @@
-use std::sync::Arc;
-use std::mem;
+use std::collections::HashSet;
+use std::{sync::Arc};
 use model::{Vertex, Model, DrawModel, DrawLight};
 use glam::{Quat, Vec3};
+use wgpu::Queue;
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -18,6 +19,10 @@ mod hdr;
 mod model;
 mod resources;
 mod texture;
+mod game;
+
+// Can't be 0
+const MAX_INSTANCES: usize = 1000;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -29,6 +34,134 @@ struct LightUniform {
     // Due to uniforms requiring 16 byte (4 float) spacing, we need to use a padding field here
     _padding2: u32,
 }
+
+pub struct ModelBucket {
+    model: Model,
+    start_index: usize,
+    current_len: usize,
+    // instance_ids: std::ops::Range<u32>,
+}
+
+pub struct ModelInstances {
+    model_buckets: Vec<ModelBucket>,
+    instances: Vec<model::Instance>,
+    raw_instances: Vec<model::InstanceRaw>,
+    instance_buffer: wgpu::Buffer,
+    num_slots: usize,
+    instances_to_update: HashSet<usize>,
+}
+
+impl ModelInstances {
+    pub fn new(
+        model_buckets: Vec<ModelBucket>,
+        instances: Vec<model::Instance>,
+        instance_buffer: wgpu::Buffer,
+        num_slots: usize,
+    ) -> ModelInstances {
+        let instances_to_update = HashSet::new();
+        let raw_instances: Vec<model::InstanceRaw> = instances.iter().map(|instance| instance.to_raw()).collect();
+        ModelInstances {model_buckets, instances, raw_instances, instance_buffer, num_slots, instances_to_update}
+    }
+
+    // TODO test this
+    pub fn get_instances_from_model_id(&self, model_id: usize) -> Option<&[model::Instance]> {
+        self.instances.get(self.model_buckets[model_id].start_index..self.model_buckets[model_id].start_index + self.model_buckets[model_id].current_len)
+    }
+
+    pub fn get_mut_instance(&mut self, model_id: usize, instance_id: usize) -> &mut model::Instance {
+        if !self.is_index_valid(model_id, instance_id) {panic!("Tried to index outside of current model bucket or model bucket doesn't exist")};
+
+        let global_idx = self.model_buckets[model_id].start_index + instance_id;
+        self.instances_to_update.insert(global_idx);
+        &mut self.instances[global_idx]
+    }
+
+    pub fn update_instance_buffer(&mut self, queue: &Queue) {
+        if self.instances_to_update.is_empty() {
+            return;
+        }
+
+        // Updates any corresponding raw instances
+        for &idx in &self.instances_to_update {
+            self.raw_instances[idx] = self.instances[idx].to_raw();
+        }
+
+        // Writes the whole buffer over. Since most objects are moving in this game, this works. If
+        // we had a lot of static objects, it would probably be more optimal to write to specific
+        // parts in the buffer
+        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.raw_instances));
+    }
+
+    pub fn add_instance(&mut self, model_id: usize, instance: model::Instance) {
+        if !self.is_model_index_valid(model_id) {panic!("Model bucket doesn't exist")};
+
+        let mut good_to_add = false;
+        if let Some(last_item) = self.model_buckets.last() {
+            good_to_add = true;
+            if last_item.start_index + last_item.current_len + 1 > self.num_slots {
+                // TODO it is outside of scope currently to have the buffer be dynamically expanded.
+                // If we want to do it in the future, we need to re-create the buffer and fill the
+                // instances/raw instances with data
+                // let slots_to_add = self.num_slots
+                // This is pretty unnecessary considering the above calculation could possibly
+                // overflow
+                // if let Some(new_num_slots) = self.num_slots.checked_add(slots_to_add) {
+                //     self.num_slots = new_num_slots;
+                //     for _ in 0..slots_to_add {
+                //         self.instances.push();
+                //     }
+                //     good_to_add = true;
+                // } else {
+                //     println!("Failed to allocate more slots for objects")
+                // }
+                panic!("Couldn't add more objects to the object buffer, buffer is full");
+            }
+        }
+
+        if good_to_add {
+            self.raw_instances.pop();
+            self.instances.pop();
+            let insert_index = self.model_buckets[model_id].start_index + self.model_buckets[model_id].current_len;
+            self.raw_instances.insert(insert_index, instance.to_raw());
+            self.instances.insert(insert_index, instance);
+
+            self.model_buckets[model_id].current_len += 1;
+            // Add 1 to all later buckets start indices
+            if let Some(buckets_to_shift) = self.model_buckets.get_mut((model_id + 1)..) {
+                for bucket in buckets_to_shift {
+                    bucket.start_index += 1;
+                }
+            }
+        }
+    }
+
+    // TODO test this
+    pub fn remove_instance(&mut self, model_id: usize, instance_id: usize) {
+        if !self.is_index_valid(model_id, instance_id) {panic!("Tried to index outside of current model bucket or model bucket doesn't exist")};
+        let global_idx = self.model_buckets[model_id].start_index + instance_id;
+        self.instances.remove(global_idx);
+        self.raw_instances.remove(global_idx);
+        self.model_buckets[model_id].current_len -= 1;
+        // Remove 1 from all later buckets start indices
+        if let Some(buckets_to_shift) = self.model_buckets.get_mut((model_id + 1)..) {
+            for bucket in buckets_to_shift {
+                bucket.start_index -= 1;
+            }
+        }
+    }
+
+    fn is_model_index_valid(&self, model_id: usize) -> bool {
+        if model_id >= self.model_buckets.len() {
+            return false;
+        }
+        return true;
+    }
+
+    fn is_index_valid(&self, model_id: usize, instance_id: usize) -> bool {
+        return self.is_model_index_valid(model_id) && instance_id < self.model_buckets[model_id].current_len;
+    }
+}
+
 // This will store the state of our game
 pub struct State {
     window: Arc<Window>,
@@ -37,15 +170,13 @@ pub struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    obj_model: Model,
+    model_instances: ModelInstances,
     camera: camera::Camera,
     projection: camera::Projection,
     camera_controller: camera::CameraController,
     camera_uniform: camera::CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
-    instances: Vec<model::Instance>,
-    instance_buffer: wgpu::Buffer,
     light_model: Model,
     depth_texture: texture::Texture,
     is_surface_configured: bool,
@@ -56,6 +187,7 @@ pub struct State {
     hdr: hdr::HdrPipeline,
     environment_bind_group: wgpu::BindGroup,
     sky_pipeline: wgpu::RenderPipeline,
+    game_manager: game::GameManager,
 }
 
 fn create_render_pipeline(
@@ -222,7 +354,7 @@ impl State {
         let camera = camera::Camera::new((0.0, 5.0, 10.0), -90.0_f32.to_radians(), -20.0_f32.to_radians());
         let projection =
         camera::Projection::new(config.width, config.height, 45.0_f32.to_radians(), 0.1, 100.0);
-        let camera_controller = camera::CameraController::new(4.0, 1.0);
+        let camera_controller = camera::CameraController::new(4.0, 1.0, false);
 
         let mut camera_uniform = camera::CameraUniform::new();
         camera_uniform.update_view_proj(&camera, &projection);
@@ -231,40 +363,6 @@ impl State {
                 label: Some("Camera Buffer"),
                 contents: bytemuck::cast_slice(&[camera_uniform]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // const NUM_INSTANCES_PER_ROW: u32 = 10;
-        // const SPACE_BETWEEN: f32 = 3.0;
-        // let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
-        //     (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-        //         let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
-        //         let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
-        //         let position = cgmath::Vector3 { x, y: 0.0, z };
-
-        //         let rotation = if position.is_zero() {
-        //             // this is needed so an object at (0, 0, 0) won't get scaled to zero
-        //             // as Quaternions can affect scale if they're not created correctly
-        //             cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
-        //         } else {
-        //             cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
-        //         };
-
-        //         Instance {
-        //             position, rotation,
-        //         }
-        //     })
-        // }).collect::<Vec<_>>();
-        let mut instances = Vec::new();
-        instances.push(model::Instance {
-            position: Vec3 { x: 0.0, y: 0.0, z: 0.0},
-            rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
-        });
-
-        let instance_data = instances.iter().map(model::Instance::to_raw).collect::<Vec<_>>();
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
         let camera_bind_group_layout =
@@ -291,9 +389,56 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
-        let obj_model =
+        // const NUM_INSTANCES_PER_ROW: u32 = 10;
+        // const SPACE_BETWEEN: f32 = 3.0;
+        // let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
+        //     (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+        //         let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+        //         let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+        //         let position = cgmath::Vector3 { x, y: 0.0, z };
+
+        //         let rotation = if position.is_zero() {
+        //             // this is needed so an object at (0, 0, 0) won't get scaled to zero
+        //             // as Quaternions can affect scale if they're not created correctly
+        //             cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
+        //         } else {
+        //             cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+        //         };
+
+        //         Instance {
+        //             position, rotation,
+        //         }
+        //     })
+        // }).collect::<Vec<_>>();
+        let mut instances = vec![model::Instance::default(); MAX_INSTANCES];
+        instances[0] = model::Instance {
+            position: Vec3 { x: 0.0, y: 0.0, z: 0.0},
+            rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
+        };
+        instances[1] = model::Instance {
+            position: Vec3 { x: 0.0, y: -10.0, z: 0.0},
+            rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
+        };
+
+        let instance_data = instances.iter().map(model::Instance::to_raw).collect::<Vec<_>>();
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let spaceship_model =
             resources::load_model("Spaceship.obj", &device, &queue, &texture_bind_group_layout)
                 .unwrap();
+        let asteroid_model =
+            resources::load_model("Asteroid.obj", &device, &queue, &texture_bind_group_layout)
+                .unwrap();
+
+        let mut model_instance_maps: Vec<ModelBucket> = Vec::new();
+        model_instance_maps.push(ModelBucket { model: spaceship_model, start_index: 0, current_len: 1 });
+        model_instance_maps.push(ModelBucket { model: asteroid_model, start_index: 1, current_len: 1 });
+        // TODO Consider having the models be added in this new function and the model buckets are created in there
+        let model_instances = ModelInstances::new(model_instance_maps, instances, instance_buffer, MAX_INSTANCES);
 
         let (vertices, indices) = resources::generate_cube(1.0);
         let light_model = resources::load_model_from_vertices_indices(
@@ -465,6 +610,8 @@ impl State {
             )
         };
 
+        let game_manager = game::GameManager::new();
+
         Ok(Self {
             window,
             surface,
@@ -472,7 +619,7 @@ impl State {
             queue,
             config,
             render_pipeline,
-            obj_model,
+            model_instances,
             camera,
             projection,
             camera_controller,
@@ -480,8 +627,6 @@ impl State {
             camera_bind_group,
             camera_uniform,
             light_model,
-            instances,
-            instance_buffer,
             depth_texture,
             is_surface_configured: false,
             light_uniform,
@@ -491,6 +636,7 @@ impl State {
             hdr,
             environment_bind_group,
             sky_pipeline,
+            game_manager,
         })
     }
 
@@ -528,8 +674,8 @@ impl State {
     }
 
     fn update(&mut self, dt: instant::Duration) {
-        // Update camera projection matrix
-        self.camera_controller.update_camera(&mut self.camera, dt);
+        // Update camera projection matrix and game objects
+        self.game_manager.update(dt, &mut self.camera_controller, &mut self.camera, &mut self.model_instances);
         self.camera_uniform.update_view_proj(&self.camera, &self.projection);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -549,11 +695,8 @@ impl State {
             bytemuck::cast_slice(&[self.light_uniform]),
         );
 
-        let speed = 0.0_f32.to_radians();
-        let rotate = Quat::from_axis_angle(Vec3::Y, speed * dt.as_secs_f32());
-        self.instances[0].rotation = (rotate * self.instances[0].rotation).normalize();
 
-        self.queue.write_buffer(&self.instance_buffer, (0 * mem::size_of::<model::InstanceRaw>()) as wgpu::BufferAddress, bytemuck::bytes_of(&self.instances[0].to_raw()));
+        self.model_instances.update_instance_buffer(&self.queue);
     }
 
     fn render(&mut self) -> anyhow::Result<()> {
@@ -627,7 +770,7 @@ impl State {
                 multiview_mask: None,
             });
 
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.model_instances.instance_buffer.slice(..));
             render_pass.set_pipeline(&self.light_render_pipeline);
             render_pass.draw_light_model(
                 &self.light_model,
@@ -636,13 +779,16 @@ impl State {
             );
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.draw_model_instanced(
-                &self.obj_model,
-                0..self.instances.len() as u32,
-                &self.camera_bind_group,
-                &self.light_bind_group,
-                &self.environment_bind_group,
-            );
+            for model_instance_map in &self.model_instances.model_buckets {
+                render_pass.draw_model_instanced(
+                    &model_instance_map.model,
+                    // TODO Impl a get_range function for model instance maps
+                    std::ops::Range { start: model_instance_map.start_index as u32, end: (model_instance_map.start_index + model_instance_map.current_len) as u32 },
+                    &self.camera_bind_group,
+                    &self.light_bind_group,
+                    &self.environment_bind_group,
+                );
+            }
 
             render_pass.set_pipeline(&self.sky_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
