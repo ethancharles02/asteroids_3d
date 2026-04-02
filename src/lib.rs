@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::{sync::Arc};
 use model::{Vertex, Model, DrawModel, DrawLight};
 use glam::{Quat, Vec3};
-use wgpu::Queue;
+use wgpu::{Device, Queue};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -11,6 +11,7 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::Window,
 };
+use web_time::{Instant, Duration};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -42,6 +43,12 @@ pub struct ModelBucket {
     // instance_ids: std::ops::Range<u32>,
 }
 
+impl ModelBucket {
+    pub fn get_instance_range(&self) -> std::ops::Range<u32> {
+        std::ops::Range { start: self.start_index as u32, end: (self.start_index + self.current_len) as u32 }
+    }
+}
+
 pub struct ModelInstances {
     model_buckets: Vec<ModelBucket>,
     instances: Vec<model::Instance>,
@@ -53,11 +60,24 @@ pub struct ModelInstances {
 
 impl ModelInstances {
     pub fn new(
-        model_buckets: Vec<ModelBucket>,
-        instances: Vec<model::Instance>,
-        instance_buffer: wgpu::Buffer,
+        device: &Device,
+        models: Vec<model::Model>,
         num_slots: usize,
     ) -> ModelInstances {
+        let instances = vec![model::Instance::default(); MAX_INSTANCES];
+
+        let instance_data = instances.iter().map(model::Instance::to_raw).collect::<Vec<_>>();
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
+
+        let mut model_buckets: Vec<ModelBucket> = Vec::new();
+        for model in models {
+            model_buckets.push(ModelBucket { model: model, start_index: 0, current_len: 0 });
+        }
         let instances_to_update = HashSet::new();
         let raw_instances: Vec<model::InstanceRaw> = instances.iter().map(|instance| instance.to_raw()).collect();
         ModelInstances {model_buckets, instances, raw_instances, instance_buffer, num_slots, instances_to_update}
@@ -249,10 +269,6 @@ fn create_render_pipeline(
 impl State {
     async fn new(window: Arc<Window>) -> anyhow::Result<State> {
         window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-        window.set_cursor_visible(false);
-        window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
-            .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined))
-            .unwrap_or_else(|e| eprintln!("Failed to grab cursor: {:?}", e));
 
         let size = window.inner_size();
 
@@ -389,56 +405,9 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
-        // const NUM_INSTANCES_PER_ROW: u32 = 10;
-        // const SPACE_BETWEEN: f32 = 3.0;
-        // let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
-        //     (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-        //         let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
-        //         let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
-        //         let position = cgmath::Vector3 { x, y: 0.0, z };
-
-        //         let rotation = if position.is_zero() {
-        //             // this is needed so an object at (0, 0, 0) won't get scaled to zero
-        //             // as Quaternions can affect scale if they're not created correctly
-        //             cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
-        //         } else {
-        //             cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
-        //         };
-
-        //         Instance {
-        //             position, rotation,
-        //         }
-        //     })
-        // }).collect::<Vec<_>>();
-        let mut instances = vec![model::Instance::default(); MAX_INSTANCES];
-        instances[0] = model::Instance {
-            position: Vec3 { x: 0.0, y: 0.0, z: 0.0},
-            rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
-        };
-        instances[1] = model::Instance {
-            position: Vec3 { x: 0.0, y: -10.0, z: 0.0},
-            rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
-        };
-
-        let instance_data = instances.iter().map(model::Instance::to_raw).collect::<Vec<_>>();
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let spaceship_model =
-            resources::load_model("Spaceship.obj", &device, &queue, &texture_bind_group_layout)
-                .unwrap();
-        let asteroid_model =
-            resources::load_model("Asteroid.obj", &device, &queue, &texture_bind_group_layout)
-                .unwrap();
-
-        let mut model_instance_maps: Vec<ModelBucket> = Vec::new();
-        model_instance_maps.push(ModelBucket { model: spaceship_model, start_index: 0, current_len: 1 });
-        model_instance_maps.push(ModelBucket { model: asteroid_model, start_index: 1, current_len: 1 });
-        // TODO Consider having the models be added in this new function and the model buckets are created in there
-        let model_instances = ModelInstances::new(model_instance_maps, instances, instance_buffer, MAX_INSTANCES);
+        let models = game::GameManager::get_models(&device, &queue, &texture_bind_group_layout);
+        let mut model_instances = ModelInstances::new(&device, models, MAX_INSTANCES);
+        let game_manager = game::GameManager::new(&mut model_instances);
 
         let (vertices, indices) = resources::generate_cube(1.0);
         let light_model = resources::load_model_from_vertices_indices(
@@ -610,8 +579,6 @@ impl State {
             )
         };
 
-        let game_manager = game::GameManager::new();
-
         Ok(Self {
             window,
             surface,
@@ -673,7 +640,7 @@ impl State {
         self.camera_controller.handle_scroll(delta);
     }
 
-    fn update(&mut self, dt: instant::Duration) {
+    fn update(&mut self, dt: Duration) {
         // Update camera projection matrix and game objects
         self.game_manager.update(dt, &mut self.camera_controller, &mut self.camera, &mut self.model_instances);
         self.camera_uniform.update_view_proj(&self.camera, &self.projection);
@@ -782,8 +749,7 @@ impl State {
             for model_instance_map in &self.model_instances.model_buckets {
                 render_pass.draw_model_instanced(
                     &model_instance_map.model,
-                    // TODO Impl a get_range function for model instance maps
-                    std::ops::Range { start: model_instance_map.start_index as u32, end: (model_instance_map.start_index + model_instance_map.current_len) as u32 },
+                    model_instance_map.get_instance_range(),
                     &self.camera_bind_group,
                     &self.light_bind_group,
                     &self.environment_bind_group,
@@ -810,7 +776,7 @@ pub struct App {
     #[cfg(target_arch = "wasm32")]
     proxy: Option<winit::event_loop::EventLoopProxy<State>>,
     state: Option<State>,
-    last_time: instant::Instant,
+    last_time: Instant,
 }
 
 impl App {
@@ -821,7 +787,7 @@ impl App {
             state: None,
             #[cfg(target_arch = "wasm32")]
             proxy,
-            last_time: instant::Instant::now(),
+            last_time: Instant::now(),
         }
     }
 }
@@ -912,11 +878,23 @@ impl ApplicationHandler<State> for App {
         };
 
         match event {
+            WindowEvent::Focused(true) => {
+                // Hide the cursor and locks it
+                state.window.set_cursor_visible(false);
+                state.window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                .unwrap_or_else(|e| eprintln!("Failed to grab cursor: {:?}", e));
+            }
+            WindowEvent::Focused(false) => {
+                // Show the cursor and release it
+                state.window.set_cursor_visible(true);
+                state.window.set_cursor_grab(winit::window::CursorGrabMode::None)
+                    .unwrap_or_else(|e| eprintln!("Failed to release cursor: {:?}", e));
+            }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => state.resize(size.width, size.height),
             WindowEvent::RedrawRequested => {
                 let dt = self.last_time.elapsed();
-                self.last_time = instant::Instant::now();
+                self.last_time = Instant::now();
                 state.update(dt);
                 match state.render() {
                     Ok(_) => {}

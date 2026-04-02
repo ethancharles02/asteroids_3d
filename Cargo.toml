@@ -13,7 +13,7 @@ pollster = "0.3"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 glam = { version = "0.32.1", features = ["bytemuck"] }
 tobj = { version = "4.0.3", default-features = false, features = ["async"]}
-instant = "0.1"
+web-time = "1.1.0"
 
 [dependencies.image]
 version = "0.24"
