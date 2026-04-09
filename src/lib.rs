@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::{sync::Arc};
 use model::{Vertex, Model, DrawModel, DrawLight};
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec3, EulerRot};
 use wgpu::{Device, Queue};
 use wgpu::util::DeviceExt;
 use winit::{
@@ -367,7 +367,13 @@ impl State {
                 label: Some("texture_bind_group_layout"),
             });
 
-        let camera = camera::Camera::new((0.0, 5.0, 10.0), -90.0_f32.to_radians(), -20.0_f32.to_radians());
+        // let camera = camera::Camera::new((0.0, 5.0, 10.0), -90.0_f32.to_radians(), -20.0_f32.to_radians(), 0.0);
+        let camera = camera::Camera::new(
+            (0.0, 5.0, 10.0),
+            -90.0_f32.to_radians(),
+            -20.0_f32.to_radians(),
+            0.0
+        );
         let projection =
         camera::Projection::new(config.width, config.height, 45.0_f32.to_radians(), 0.1, 100.0);
         let camera_controller = camera::CameraController::new(4.0, 1.0, false);
@@ -407,7 +413,7 @@ impl State {
 
         let models = game::GameManager::get_models(&device, &queue, &texture_bind_group_layout);
         let mut model_instances = ModelInstances::new(&device, models, MAX_INSTANCES);
-        let game_manager = game::GameManager::new(&mut model_instances);
+        let game_manager = game::GameManager::new(&mut model_instances, 1.0);
 
         let (vertices, indices) = resources::generate_cube(1.0);
         let light_model = resources::load_model_from_vertices_indices(
@@ -621,7 +627,7 @@ impl State {
     }
 
     fn handle_key(&mut self, event_loop: &ActiveEventLoop, key: KeyCode, pressed: bool) {
-        if !self.camera_controller.handle_key(key, pressed) {
+        if !self.game_manager.handle_key(key, pressed, &mut self.camera_controller) {
             match (key, pressed) {
                 (KeyCode::Escape, true) => event_loop.exit(),
                 _ => {}
@@ -661,7 +667,6 @@ impl State {
             0,
             bytemuck::cast_slice(&[self.light_uniform]),
         );
-
 
         self.model_instances.update_instance_buffer(&self.queue);
     }

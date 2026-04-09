@@ -5,6 +5,7 @@ use asteroids_3d::run;
 //      wgpu implementation follows the guide up to but not including the hdr portion
 // Credit for the Spaceship model https://sketchfab.com/3d-models/light-fighter-spaceship-free-51616ef53af84fe595c5603cd3e0f3e1
 // TODO clean up warnings
+// TODO rotate the ship model 90 degrees and make sure the rotation is saved (AI claims ctrl A and "Apply Rotation" does it)
 fn main() {
     let _ = run().unwrap();
 }

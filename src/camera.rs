@@ -55,6 +55,7 @@ pub struct Camera {
     pub position: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    pub rotation: Quat,
 }
 
 impl Camera {
@@ -62,30 +63,41 @@ impl Camera {
         V: Into<Vec3>,
         Y: Into<f32>,
         P: Into<f32>,
+        Roll: Into<f32>,
     >(
         position: V,
         yaw: Y,
         pitch: P,
+        roll: Roll,
     ) -> Self {
+        let yaw = yaw.into();
+        let pitch = pitch.into();
+        let roll = roll.into();
         Self {
             position: position.into(),
-            yaw: yaw.into(),
-            pitch: pitch.into(),
+            yaw: yaw,
+            pitch: pitch,
+            rotation: Quat::from_euler(
+                EulerRot::YXZ,
+                yaw.to_radians(),
+                pitch.to_radians(),
+                roll.to_radians(),
+            ),
         }
     }
 
     pub fn calc_matrix(&self) -> Mat4 {
-        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
-        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+        // Build the rotation quaternion from Euler angles in XYZ order
+        // let rotation = Quat::from_euler(EulerRot::XYZ, self.pitch, self.yaw, self.roll);
+
+        // Apply rotation to the default forward and up vectors
+        let forward = (self.rotation * Vec3::Z).normalize();
+        let up = (self.rotation * Vec3::Y).normalize();
 
         Mat4::look_to_rh(
             self.position,
-            Vec3::new(
-                cos_pitch * cos_yaw,
-                sin_pitch,
-                cos_pitch * sin_yaw
-            ).normalize(),
-            Vec3::Y,
+            forward,
+            up,
         )
     }
 }
@@ -130,8 +142,10 @@ pub struct CameraController {
     amount_backward: f32,
     amount_up: f32,
     amount_down: f32,
-    rotate_horizontal: f32,
-    rotate_vertical: f32,
+    mouse_dx: f32,
+    mouse_dy: f32,
+    mouse_x: f32,
+    mouse_y: f32,
     scroll: f32,
     speed: f32,
     sensitivity: f32,
@@ -147,8 +161,10 @@ impl CameraController {
             amount_backward: 0.0,
             amount_up: 0.0,
             amount_down: 0.0,
-            rotate_horizontal: 0.0,
-            rotate_vertical: 0.0,
+            mouse_dx: 0.0,
+            mouse_dy: 0.0,
+            mouse_x: 0.0,
+            mouse_y: 0.0,
             scroll: 0.0,
             speed,
             sensitivity,
@@ -207,15 +223,13 @@ impl CameraController {
         self.amount_backward = 0.0;
         self.amount_up = 0.0;
         self.amount_down = 0.0;
-        self.rotate_horizontal = 0.0;
-        self.rotate_vertical = 0.0;
+        self.mouse_dx = 0.0;
+        self.mouse_dy = 0.0;
     }
 
     pub fn handle_mouse(&mut self, mouse_dx: f64, mouse_dy: f64) {
-        if self.is_free {
-            self.rotate_horizontal = mouse_dx as f32;
-            self.rotate_vertical = mouse_dy as f32;
-        }
+        self.mouse_dx = mouse_dx as f32;
+        self.mouse_dy = mouse_dy as f32;
     }
 
     pub fn handle_scroll(&mut self, delta: &MouseScrollDelta) {
@@ -232,55 +246,44 @@ impl CameraController {
     }
 
     pub fn update_camera(&mut self, camera: &mut Camera, spaceship: &model::Instance, dt: Duration) {
+        let dt = dt.as_secs_f32();
         if self.is_free {
-            let dt = dt.as_secs_f32();
-
-            // Move forward/backward and left/right
-            let (yaw_sin, yaw_cos) = camera.yaw.sin_cos();
-            let forward = Vec3::new(yaw_cos, 0.0, yaw_sin).normalize();
-            let right = Vec3::new(-yaw_sin, 0.0, yaw_cos).normalize();
-            camera.position += forward * (self.amount_forward - self.amount_backward) * self.speed * dt;
-            camera.position += right * (self.amount_right - self.amount_left) * self.speed * dt;
-
-            // Move in/out (aka. "zoom")
-            // Note: this isn't an actual zoom. The camera's position
-            // changes when zooming. I've added this to make it easier
-            // to get closer to an object you want to focus on.
-            let (pitch_sin, pitch_cos) = camera.pitch.sin_cos();
-            let scrollward = Vec3::new(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
-            camera.position += scrollward * self.scroll * self.speed * self.sensitivity * dt;
-            self.scroll = 0.0;
-
-            // Move up/down. Since we don't use roll, we can just
-            // modify the y coordinate directly.
+            // Update position from keyboard
+            let forward = camera.rotation * Vec3::Z;
+            let right = camera.rotation * -Vec3::X;
+            let move_fwd = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+            let move_right = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
+            camera.position += move_fwd * (self.amount_forward - self.amount_backward) * self.speed * dt;
+            camera.position += move_right * (self.amount_right - self.amount_left) * self.speed * dt;
             camera.position.y += (self.amount_up - self.amount_down) * self.speed * dt;
 
-            // Rotate
-            camera.yaw += self.rotate_horizontal * self.sensitivity * dt;
-            camera.pitch += -self.rotate_vertical * self.sensitivity * dt;
+            // Update position from scrolling
+            camera.position += -forward * self.scroll * self.speed * self.sensitivity * dt;
+            self.scroll = 0.0;
 
-            // If process_mouse isn't called every frame, these values
-            // will not get set to zero, and the camera will rotate
-            // when moving in a non-cardinal direction.
-            self.rotate_horizontal = 0.0;
-            self.rotate_vertical = 0.0;
+            // Update raw angles
+            camera.yaw += -self.mouse_dx * self.sensitivity * dt;
+            camera.pitch += self.mouse_dy * self.sensitivity * dt;
+            camera.pitch = camera.pitch.clamp(-SAFE_FRAC_PI_2, SAFE_FRAC_PI_2);
 
-            // Keep the camera's angle from going too high/low.
-            if camera.pitch < -SAFE_FRAC_PI_2 {
-                camera.pitch = -SAFE_FRAC_PI_2;
-            } else if camera.pitch > SAFE_FRAC_PI_2 {
-                camera.pitch = SAFE_FRAC_PI_2;
-            }
+            // Re-generate the rotation Quat from the cleaned angles
+            camera.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0).normalize();
+
+            self.mouse_dx = 0.0;
+            self.mouse_dy = 0.0;
         } else {
-            let forward = spaceship.rotation * Vec3::Z;
-            camera.position = spaceship.position + (forward * -15.0) + (Vec3::new(0.0, 10.0, 0.0));
-            // Rotate 90 degrees to the right and 22.5 degrees down
-            let offset_rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2) *
-                                        Quat::from_rotation_x(-std::f32::consts::FRAC_PI_8);
-            let corrected_rotation = spaceship.rotation * offset_rotation;
-            let (yaw, pitch, _roll) = Mat3::from_quat(corrected_rotation).to_euler(EulerRot::YXZ);
-            camera.yaw = yaw;
-            camera.pitch = pitch;
+            self.mouse_x += self.mouse_dx * self.sensitivity * dt;
+            self.mouse_y += self.mouse_dy * self.sensitivity * dt;
+
+            // Keep the camera behind the ship
+            let local_offset = Vec3::new(0.0, 5.0, -15.0);
+            let rotated_offset = spaceship.rotation * local_offset;
+            camera.position = spaceship.position + rotated_offset;
+
+            // Rotate 22.5 degrees down
+            // let camera_pitch_offset = Quat::from_rotation_x(std::f32::consts::FRAC_PI_8);
+            // camera.rotation = spaceship.rotation * camera_pitch_offset;
+            camera.rotation = spaceship.rotation;
         }
     }
 }
