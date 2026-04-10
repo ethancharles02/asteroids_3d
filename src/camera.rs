@@ -150,6 +150,8 @@ pub struct CameraController {
     sensitivity: f32,
     aim_sensitivity: f32,
     is_free: bool,
+    follow_smoothing: f32,
+    rotation_smoothing: f32,
 }
 
 impl CameraController {
@@ -170,6 +172,8 @@ impl CameraController {
             sensitivity,
             aim_sensitivity,
             is_free: is_free,
+            follow_smoothing: 5.0,
+            rotation_smoothing: 2.0,
         }
     }
 
@@ -297,15 +301,19 @@ impl CameraController {
             self.mouse_x += self.mouse_dx * (self.aim_sensitivity * 200.0) * dt;
             self.mouse_y -= self.mouse_dy * (self.aim_sensitivity * 200.0) * dt;
 
-            // Keep the camera behind the ship
-            let local_offset = Vec3::new(0.0, 5.0, -15.0);
+            // Calculate target position and rotation
+            let local_offset = Vec3::new(0.0, 2.0, -20.0);
             let rotated_offset = spaceship.rotation * local_offset;
-            camera.position = spaceship.position + rotated_offset;
+            let target_position = spaceship.position + rotated_offset;
+            let target_rotation = spaceship.rotation;
 
-            // Rotate 22.5 degrees down
-            // let camera_pitch_offset = Quat::from_rotation_x(std::f32::consts::FRAC_PI_8);
-            // camera.rotation = spaceship.rotation * camera_pitch_offset;
-            camera.rotation = spaceship.rotation;
+            // Smoothly interpolate position towards target
+            let t_position = 1.0 - (-self.follow_smoothing * dt).exp();
+            camera.position = camera.position.lerp(target_position, t_position);
+
+            // Smoothly interpolate rotation towards target
+            let t_rotation = 1.0 - (-self.rotation_smoothing * dt).exp();
+            camera.rotation = camera.rotation.slerp(target_rotation, t_rotation).normalize();
 
             self.mouse_dx = 0.0;
             self.mouse_dy = 0.0;
