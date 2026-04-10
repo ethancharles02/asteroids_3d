@@ -22,8 +22,7 @@ pub struct GameObject {
 }
 
 pub struct GameManager {
-    timer: Duration,
-    counter: u8,
+    timer: f32,
     player_droll: f32,
     player_cur_droll: f32,
     player_dspeed: f32,
@@ -55,39 +54,40 @@ impl GameManager {
         };
         model_instances.add_instance(SPACESHIP_MODEL_ID, spaceship);
         model_instances.add_instance(ASTEROID_MODEL_ID, asteroid);
-        GameManager { timer: Duration::new(0, 0), counter: 0, player_droll: player_roll_sensitivity, player_cur_droll: 0.0, player_cur_dspeed: 0.0, player_dspeed, player_speed: player_min_max_speed.0, player_min_max_speed }
+        GameManager { timer: 0.0, player_droll: player_roll_sensitivity, player_cur_droll: 0.0, player_cur_dspeed: 0.0, player_dspeed, player_speed: player_min_max_speed.0, player_min_max_speed }
     }
 
-    pub fn update(&mut self, config: &wgpu::SurfaceConfiguration, dt: Duration, camera_controller: &mut camera::CameraController, camera: &mut camera::Camera, model_instances: &mut ModelInstances) {
+    pub fn update(&mut self, config: &wgpu::SurfaceConfiguration, dt: f32, camera_controller: &mut camera::CameraController, camera: &mut camera::Camera, model_instances: &mut ModelInstances) {
         self.timer += dt;
-        let dt_f32 = dt.as_secs_f32();
 
         if let Some(instances) = model_instances.get_instances_from_model_id(SPACESHIP_MODEL_ID) {
             if let Some(_) = instances.get(0) {
                 let mut_spaceship = model_instances.get_mut_instance(SPACESHIP_MODEL_ID, 0);
 
-                self.player_speed = (self.player_speed + self.player_cur_dspeed * dt_f32).clamp(self.player_min_max_speed.0, self.player_min_max_speed.1);
+                self.player_speed = (self.player_speed + self.player_cur_dspeed * dt).clamp(self.player_min_max_speed.0, self.player_min_max_speed.1);
                 let forward = mut_spaceship.rotation * Vec3::Z;
-                mut_spaceship.position += forward * self.player_speed * dt_f32;
+                mut_spaceship.position += forward * self.player_speed * dt;
 
                 // Update rotation of the ship
-                let droll_rotation = Quat::from_rotation_z(self.player_cur_droll * dt_f32);
+                let droll_rotation = Quat::from_rotation_z(self.player_cur_droll * dt);
                 let width_f32 = config.width as f32;
                 let height_f32 = config.height as f32;
-                let rel_mouse_x = camera_controller.get_cursor_position().0 - (width_f32 / 2.0);
-                let rel_mouse_y = camera_controller.get_cursor_position().1 - (height_f32 / 2.0);
-                let yaw_rotation = Quat::from_rotation_y(-(rel_mouse_x / width_f32) * dt_f32);
-                let pitch_rotation = Quat::from_rotation_x(-(rel_mouse_y / height_f32) * dt_f32);
+                let cursor_position = camera_controller.get_cursor_position();
+                let rel_mouse_x = cursor_position.0 - (width_f32 / 2.0);
+                let rel_mouse_y = cursor_position.1 - (height_f32 / 2.0);
+                let yaw_rotation = Quat::from_rotation_y(-(rel_mouse_x / width_f32) * dt);
+                let pitch_rotation = Quat::from_rotation_x(-(rel_mouse_y / height_f32) * dt);
                 mut_spaceship.rotation = mut_spaceship.rotation * droll_rotation * yaw_rotation * pitch_rotation;
                 mut_spaceship.rotation = mut_spaceship.rotation.normalize();
 
                 camera_controller.update_camera(camera, mut_spaceship, dt);
+                camera_controller.clamp_cursor_position(config.width, config.height);
             }
         }
 
         // TODO add dynamic asteroid creation and movement (don't delete asteroids? just move them when they go past the player?)
         let asteroid_speed = 10.0_f32.to_radians();
-        let asteroid_rotate = Quat::from_axis_angle(Vec3::Y, asteroid_speed * dt_f32);
+        let asteroid_rotate = Quat::from_axis_angle(Vec3::Y, asteroid_speed * dt);
         let asteroid = model_instances.get_mut_instance(ASTEROID_MODEL_ID, 0);
         asteroid.rotation = (asteroid_rotate * asteroid.rotation).normalize();
     }

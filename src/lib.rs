@@ -355,7 +355,7 @@ impl State {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: surface_caps.present_modes[0],
+            present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![surface_format.add_srgb_suffix()],
             desired_maximum_frame_latency: 2,
@@ -410,9 +410,7 @@ impl State {
         );
         let projection =
         camera::Projection::new(config.width, config.height, 45.0_f32.to_radians(), 0.1, 100.0);
-        let mut camera_controller = camera::CameraController::new(4.0, 1.0, 2.0, false);
-        camera_controller.init_cursor_position(config.width, config.height);
-
+        let camera_controller = camera::CameraController::new(4.0, 1.0, 2.0, false);
         let mut camera_uniform = camera::CameraUniform::new();
         camera_uniform.update_view_proj(&camera, &projection);
 
@@ -448,7 +446,7 @@ impl State {
 
         let models = game::GameManager::get_models(&device, &queue, &texture_bind_group_layout);
         let mut model_instances = ModelInstances::new(&device, models, MAX_INSTANCES);
-        let game_manager = game::GameManager::new(&mut model_instances, 1.0, (2.0, 20.0), 3.0);
+        let game_manager = game::GameManager::new(&mut model_instances, 1.0, (10.0, 50.0), 40.0);
 
         let (vertices, indices) = resources::generate_cube(1.0);
         let light_model = resources::load_model_from_vertices_indices(
@@ -459,7 +457,7 @@ impl State {
         );
 
         let light_uniform = LightUniform {
-            position: [2.0, 4.0, 2.0],
+            position: [1000.0, 1000.0, -1000.0],
             _padding: 0,
             color: [1.0, 1.0, 1.0],
             _padding2: 0,
@@ -730,6 +728,7 @@ impl State {
             self.is_surface_configured = true;
             self.config.width = width;
             self.config.height = height;
+            self.camera_controller.init_cursor_position(self.config.width, self.config.height);
             self.surface.configure(&self.device, &self.config);
             self.depth_texture =
                 texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
@@ -770,6 +769,8 @@ impl State {
     }
 
     fn update(&mut self, dt: Duration) {
+        // dt.clamp(0.0, 0.1)
+        let dt = dt.as_secs_f32().clamp(0.0, 0.1);
         // Update camera projection matrix and game objects
         self.game_manager.update(&self.config, dt, &mut self.camera_controller, &mut self.camera, &mut self.model_instances);
         self.camera_uniform.update_view_proj(&self.camera, &self.projection);
@@ -779,20 +780,7 @@ impl State {
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
 
-        // Update the light
-        let old_position = Vec3::from_array(self.light_uniform.position);
-        self.light_uniform.position =
-            (Quat::from_axis_angle(Vec3::Y, (60.0 * dt.as_secs_f32()).to_radians())
-                * old_position)
-                .into();
-        self.queue.write_buffer(
-            &self.light_buffer,
-            0,
-            bytemuck::cast_slice(&[self.light_uniform]),
-        );
-
         self.model_instances.update_instance_buffer(&self.queue);
-        self.camera_controller.clamp_cursor_position(self.config.width, self.config.height);
         self.update_cursor_uniform();
     }
 

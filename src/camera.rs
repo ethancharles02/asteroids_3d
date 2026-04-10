@@ -1,6 +1,5 @@
 use std::f32::consts::FRAC_PI_2;
-use std::time::Duration;
-use glam::{Mat4, Mat3, Vec3, Quat, EulerRot};
+use glam::{Mat4, Vec3, Quat, EulerRot};
 use winit::dpi::PhysicalPosition;
 use winit::event::*;
 use winit::keyboard::KeyCode;
@@ -251,6 +250,10 @@ impl CameraController {
         (self.mouse_x, self.mouse_y)
     }
 
+    pub fn set_cursor_position(&mut self, position: (f32, f32)) {
+        (self.mouse_x, self.mouse_y) = position;
+    }
+
     pub fn is_free(&self) -> bool {
         self.is_free
     }
@@ -265,8 +268,7 @@ impl CameraController {
         self.mouse_y = self.mouse_y.clamp(0.0, height.saturating_sub(1) as f32);
     }
 
-    pub fn update_camera(&mut self, camera: &mut Camera, spaceship: &model::Instance, dt: Duration) {
-        let dt = dt.as_secs_f32();
+    pub fn update_camera(&mut self, camera: &mut Camera, spaceship: &model::Instance, dt: f32) {
         if self.is_free {
             // Update position from keyboard
             let forward = camera.rotation * Vec3::Z;

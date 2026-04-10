@@ -25,9 +25,7 @@ pub fn load_string(file_name: &str) -> anyhow::Result<String> {
     };
     #[cfg(not(target_arch = "wasm32"))]
     let txt = {
-        let path = std::path::Path::new(env!("OUT_DIR"))
-            .join("res")
-            .join(file_name);
+        let path = std::path::Path::new("res").join(file_name);
         std::fs::read_to_string(path)?
     };
 
@@ -42,9 +40,7 @@ pub fn load_binary(file_name: &str) -> anyhow::Result<Vec<u8>> {
     };
     #[cfg(not(target_arch = "wasm32"))]
     let data = {
-        let path = std::path::Path::new(env!("OUT_DIR"))
-            .join("res")
-            .join(file_name);
+        let path = std::path::Path::new("res").join(file_name);
         std::fs::read(path)?
     };
 
