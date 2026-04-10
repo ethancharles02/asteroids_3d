@@ -36,6 +36,35 @@ struct LightUniform {
     _padding2: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorUniform {
+    pos: [f32; 2],
+    size: [f32; 2],
+    screen_size: [f32; 2],
+    _padding: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorVertex {
+    position: [f32; 2],
+}
+
+impl CursorVertex {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<CursorVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x2,
+            }],
+        }
+    }
+}
+
 pub struct ModelBucket {
     model: Model,
     start_index: usize,
@@ -207,6 +236,11 @@ pub struct State {
     hdr: hdr::HdrPipeline,
     environment_bind_group: wgpu::BindGroup,
     sky_pipeline: wgpu::RenderPipeline,
+    cursor_uniform: CursorUniform,
+    cursor_vertex_buffer: wgpu::Buffer,
+    cursor_uniform_buffer: wgpu::Buffer,
+    cursor_bind_group: wgpu::BindGroup,
+    cursor_render_pipeline: wgpu::RenderPipeline,
     game_manager: game::GameManager,
 }
 
@@ -376,7 +410,8 @@ impl State {
         );
         let projection =
         camera::Projection::new(config.width, config.height, 45.0_f32.to_radians(), 0.1, 100.0);
-        let camera_controller = camera::CameraController::new(4.0, 1.0, false);
+        let mut camera_controller = camera::CameraController::new(4.0, 1.0, 2.0, false);
+        camera_controller.init_cursor_position(config.width, config.height);
 
         let mut camera_uniform = camera::CameraUniform::new();
         camera_uniform.update_view_proj(&camera, &projection);
@@ -413,7 +448,7 @@ impl State {
 
         let models = game::GameManager::get_models(&device, &queue, &texture_bind_group_layout);
         let mut model_instances = ModelInstances::new(&device, models, MAX_INSTANCES);
-        let game_manager = game::GameManager::new(&mut model_instances, 1.0);
+        let game_manager = game::GameManager::new(&mut model_instances, 1.0, (2.0, 20.0), 3.0);
 
         let (vertices, indices) = resources::generate_cube(1.0);
         let light_model = resources::load_model_from_vertices_indices(
@@ -585,6 +620,76 @@ impl State {
             )
         };
 
+        let cursor_vertices: &[CursorVertex] = &[
+            CursorVertex { position: [0.0, 0.0] },
+            CursorVertex { position: [1.0, 0.0] },
+            CursorVertex { position: [1.0, 1.0] },
+            CursorVertex { position: [0.0, 0.0] },
+            CursorVertex { position: [1.0, 1.0] },
+            CursorVertex { position: [0.0, 1.0] },
+        ];
+
+        let cursor_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cursor Vertex Buffer"),
+            contents: bytemuck::cast_slice(cursor_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let cursor_uniform = CursorUniform {
+            pos: [config.width as f32 * 0.5, config.height as f32 * 0.5],
+            size: [10.0, 10.0],
+            screen_size: [config.width as f32, config.height as f32],
+            _padding: [0.0, 0.0],
+        };
+
+        let cursor_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cursor Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[cursor_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let cursor_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Cursor Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let cursor_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cursor Bind Group"),
+            layout: &cursor_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: cursor_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let cursor_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Cursor Pipeline Layout"),
+            bind_group_layouts: &[Some(&cursor_bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let cursor_render_pipeline = {
+            let shader = wgpu::include_wgsl!("cursor.wgsl");
+            create_render_pipeline(
+                &device,
+                &cursor_pipeline_layout,
+                config.format,
+                None,
+                &[CursorVertex::desc()],
+                wgpu::PrimitiveTopology::TriangleList,
+                shader,
+            )
+        };
+
         Ok(Self {
             window,
             surface,
@@ -609,6 +714,11 @@ impl State {
             hdr,
             environment_bind_group,
             sky_pipeline,
+            cursor_uniform,
+            cursor_vertex_buffer,
+            cursor_uniform_buffer,
+            cursor_bind_group,
+            cursor_render_pipeline,
             game_manager,
         })
     }
@@ -623,7 +733,20 @@ impl State {
             self.surface.configure(&self.device, &self.config);
             self.depth_texture =
                 texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+            self.camera_controller.clamp_cursor_position(width, height);
+            self.cursor_uniform.screen_size = [width as f32, height as f32];
+            self.update_cursor_uniform();
         }
+    }
+
+    fn update_cursor_uniform(&mut self) {
+        let (mouse_x, mouse_y) = self.camera_controller.get_cursor_position();
+        self.cursor_uniform.pos = [mouse_x, mouse_y];
+        self.queue.write_buffer(
+            &self.cursor_uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[self.cursor_uniform]),
+        );
     }
 
     fn handle_key(&mut self, event_loop: &ActiveEventLoop, key: KeyCode, pressed: bool) {
@@ -648,7 +771,7 @@ impl State {
 
     fn update(&mut self, dt: Duration) {
         // Update camera projection matrix and game objects
-        self.game_manager.update(dt, &mut self.camera_controller, &mut self.camera, &mut self.model_instances);
+        self.game_manager.update(&self.config, dt, &mut self.camera_controller, &mut self.camera, &mut self.model_instances);
         self.camera_uniform.update_view_proj(&self.camera, &self.projection);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -669,6 +792,8 @@ impl State {
         );
 
         self.model_instances.update_instance_buffer(&self.queue);
+        self.camera_controller.clamp_cursor_position(self.config.width, self.config.height);
+        self.update_cursor_uniform();
     }
 
     fn render(&mut self) -> anyhow::Result<()> {
@@ -768,6 +893,29 @@ impl State {
         }
 
         self.hdr.process(&mut encoder, &view);
+
+        if !self.camera_controller.is_free() {
+            let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Cursor Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            overlay_pass.set_pipeline(&self.cursor_render_pipeline);
+            overlay_pass.set_bind_group(0, &self.cursor_bind_group, &[]);
+            overlay_pass.set_vertex_buffer(0, self.cursor_vertex_buffer.slice(..));
+            overlay_pass.draw(0..6, 0..1);
+        }
 
         // submit will accept anything that implements IntoIter
         self.queue.submit(std::iter::once(encoder.finish()));

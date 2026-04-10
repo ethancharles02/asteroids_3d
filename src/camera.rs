@@ -149,11 +149,12 @@ pub struct CameraController {
     scroll: f32,
     speed: f32,
     sensitivity: f32,
+    aim_sensitivity: f32,
     is_free: bool,
 }
 
 impl CameraController {
-    pub fn new(speed: f32, sensitivity: f32, is_free: bool) -> Self {
+    pub fn new(speed: f32, sensitivity: f32, aim_sensitivity: f32, is_free: bool) -> Self {
         Self {
             amount_left: 0.0,
             amount_right: 0.0,
@@ -168,6 +169,7 @@ impl CameraController {
             scroll: 0.0,
             speed,
             sensitivity,
+            aim_sensitivity,
             is_free: is_free,
         }
     }
@@ -245,6 +247,24 @@ impl CameraController {
         }
     }
 
+    pub fn get_cursor_position(&self) -> (f32, f32) {
+        (self.mouse_x, self.mouse_y)
+    }
+
+    pub fn is_free(&self) -> bool {
+        self.is_free
+    }
+
+    pub fn init_cursor_position(&mut self, width: u32, height: u32) {
+        self.mouse_x = width as f32 * 0.5;
+        self.mouse_y = height as f32 * 0.5;
+    }
+
+    pub fn clamp_cursor_position(&mut self, width: u32, height: u32) {
+        self.mouse_x = self.mouse_x.clamp(0.0, width.saturating_sub(1) as f32);
+        self.mouse_y = self.mouse_y.clamp(0.0, height.saturating_sub(1) as f32);
+    }
+
     pub fn update_camera(&mut self, camera: &mut Camera, spaceship: &model::Instance, dt: Duration) {
         let dt = dt.as_secs_f32();
         if self.is_free {
@@ -272,8 +292,8 @@ impl CameraController {
             self.mouse_dx = 0.0;
             self.mouse_dy = 0.0;
         } else {
-            self.mouse_x += self.mouse_dx * self.sensitivity * dt;
-            self.mouse_y += self.mouse_dy * self.sensitivity * dt;
+            self.mouse_x += self.mouse_dx * (self.aim_sensitivity * 200.0) * dt;
+            self.mouse_y -= self.mouse_dy * (self.aim_sensitivity * 200.0) * dt;
 
             // Keep the camera behind the ship
             let local_offset = Vec3::new(0.0, 5.0, -15.0);
@@ -284,6 +304,9 @@ impl CameraController {
             // let camera_pitch_offset = Quat::from_rotation_x(std::f32::consts::FRAC_PI_8);
             // camera.rotation = spaceship.rotation * camera_pitch_offset;
             camera.rotation = spaceship.rotation;
+
+            self.mouse_dx = 0.0;
+            self.mouse_dy = 0.0;
         }
     }
 }
