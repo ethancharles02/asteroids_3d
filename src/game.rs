@@ -1,10 +1,9 @@
 use glam::{Vec3, Quat};
-use web_time::{Duration};
 use winit::{
     keyboard::{KeyCode},
 };
 
-use crate::{ModelInstances, camera, model, resources};
+use crate::{camera, model, resources};
 
 const SPACESHIP_MODEL_ID: usize = 0;
 const ASTEROID_MODEL_ID: usize = 1;
@@ -43,7 +42,7 @@ impl GameManager {
         return models;
     }
 
-    pub fn new(model_instances: &mut ModelInstances, player_roll_sensitivity: f32, player_min_max_speed: (f32, f32), player_dspeed: f32) -> GameManager {
+    pub fn new(model_instances: &mut model::ModelInstances, player_roll_sensitivity: f32, player_min_max_speed: (f32, f32), player_dspeed: f32) -> GameManager {
         let spaceship = model::Instance {
             position: Vec3 { x: 0.0, y: 0.0, z: 0.0},
             rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
@@ -57,7 +56,7 @@ impl GameManager {
         GameManager { timer: 0.0, player_droll: player_roll_sensitivity, player_cur_droll: 0.0, player_cur_dspeed: 0.0, player_dspeed, player_speed: player_min_max_speed.0, player_min_max_speed }
     }
 
-    pub fn update(&mut self, config: &wgpu::SurfaceConfiguration, dt: f32, camera_controller: &mut camera::CameraController, camera: &mut camera::Camera, model_instances: &mut ModelInstances) {
+    pub fn update(&mut self, config: &wgpu::SurfaceConfiguration, dt: f32, camera_controller: &mut camera::CameraController, camera: &mut camera::Camera, model_instances: &mut model::ModelInstances) {
         self.timer += dt;
 
         if let Some(instances) = model_instances.get_instances_from_model_id(SPACESHIP_MODEL_ID) {

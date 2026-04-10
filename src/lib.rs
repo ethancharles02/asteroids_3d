@@ -1,8 +1,6 @@
-use std::collections::HashSet;
 use std::{sync::Arc};
 use model::{Vertex, Model, DrawModel, DrawLight};
-use glam::{Quat, Vec3, EulerRot};
-use wgpu::{Device, Queue};
+use ui::{CursorUniform, CursorVertex};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -21,9 +19,7 @@ mod model;
 mod resources;
 mod texture;
 mod game;
-
-// Can't be 0
-const MAX_INSTANCES: usize = 1000;
+mod ui;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -36,181 +32,6 @@ struct LightUniform {
     _padding2: u32,
 }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CursorUniform {
-    pos: [f32; 2],
-    size: [f32; 2],
-    screen_size: [f32; 2],
-    _padding: [f32; 2],
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CursorVertex {
-    position: [f32; 2],
-}
-
-impl CursorVertex {
-    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<CursorVertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
-        }
-    }
-}
-
-pub struct ModelBucket {
-    model: Model,
-    start_index: usize,
-    current_len: usize,
-    // instance_ids: std::ops::Range<u32>,
-}
-
-impl ModelBucket {
-    pub fn get_instance_range(&self) -> std::ops::Range<u32> {
-        std::ops::Range { start: self.start_index as u32, end: (self.start_index + self.current_len) as u32 }
-    }
-}
-
-pub struct ModelInstances {
-    model_buckets: Vec<ModelBucket>,
-    instances: Vec<model::Instance>,
-    raw_instances: Vec<model::InstanceRaw>,
-    instance_buffer: wgpu::Buffer,
-    num_slots: usize,
-    instances_to_update: HashSet<usize>,
-}
-
-impl ModelInstances {
-    pub fn new(
-        device: &Device,
-        models: Vec<model::Model>,
-        num_slots: usize,
-    ) -> ModelInstances {
-        let instances = vec![model::Instance::default(); MAX_INSTANCES];
-
-        let instance_data = instances.iter().map(model::Instance::to_raw).collect::<Vec<_>>();
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-
-
-        let mut model_buckets: Vec<ModelBucket> = Vec::new();
-        for model in models {
-            model_buckets.push(ModelBucket { model: model, start_index: 0, current_len: 0 });
-        }
-        let instances_to_update = HashSet::new();
-        let raw_instances: Vec<model::InstanceRaw> = instances.iter().map(|instance| instance.to_raw()).collect();
-        ModelInstances {model_buckets, instances, raw_instances, instance_buffer, num_slots, instances_to_update}
-    }
-
-    // TODO test this
-    pub fn get_instances_from_model_id(&self, model_id: usize) -> Option<&[model::Instance]> {
-        self.instances.get(self.model_buckets[model_id].start_index..self.model_buckets[model_id].start_index + self.model_buckets[model_id].current_len)
-    }
-
-    pub fn get_mut_instance(&mut self, model_id: usize, instance_id: usize) -> &mut model::Instance {
-        if !self.is_index_valid(model_id, instance_id) {panic!("Tried to index outside of current model bucket or model bucket doesn't exist")};
-
-        let global_idx = self.model_buckets[model_id].start_index + instance_id;
-        self.instances_to_update.insert(global_idx);
-        &mut self.instances[global_idx]
-    }
-
-    pub fn update_instance_buffer(&mut self, queue: &Queue) {
-        if self.instances_to_update.is_empty() {
-            return;
-        }
-
-        // Updates any corresponding raw instances
-        for &idx in &self.instances_to_update {
-            self.raw_instances[idx] = self.instances[idx].to_raw();
-        }
-
-        // Writes the whole buffer over. Since most objects are moving in this game, this works. If
-        // we had a lot of static objects, it would probably be more optimal to write to specific
-        // parts in the buffer
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.raw_instances));
-    }
-
-    pub fn add_instance(&mut self, model_id: usize, instance: model::Instance) {
-        if !self.is_model_index_valid(model_id) {panic!("Model bucket doesn't exist")};
-
-        let mut good_to_add = false;
-        if let Some(last_item) = self.model_buckets.last() {
-            good_to_add = true;
-            if last_item.start_index + last_item.current_len + 1 > self.num_slots {
-                // TODO it is outside of scope currently to have the buffer be dynamically expanded.
-                // If we want to do it in the future, we need to re-create the buffer and fill the
-                // instances/raw instances with data
-                // let slots_to_add = self.num_slots
-                // This is pretty unnecessary considering the above calculation could possibly
-                // overflow
-                // if let Some(new_num_slots) = self.num_slots.checked_add(slots_to_add) {
-                //     self.num_slots = new_num_slots;
-                //     for _ in 0..slots_to_add {
-                //         self.instances.push();
-                //     }
-                //     good_to_add = true;
-                // } else {
-                //     println!("Failed to allocate more slots for objects")
-                // }
-                panic!("Couldn't add more objects to the object buffer, buffer is full");
-            }
-        }
-
-        if good_to_add {
-            self.raw_instances.pop();
-            self.instances.pop();
-            let insert_index = self.model_buckets[model_id].start_index + self.model_buckets[model_id].current_len;
-            self.raw_instances.insert(insert_index, instance.to_raw());
-            self.instances.insert(insert_index, instance);
-
-            self.model_buckets[model_id].current_len += 1;
-            // Add 1 to all later buckets start indices
-            if let Some(buckets_to_shift) = self.model_buckets.get_mut((model_id + 1)..) {
-                for bucket in buckets_to_shift {
-                    bucket.start_index += 1;
-                }
-            }
-        }
-    }
-
-    // TODO test this
-    pub fn remove_instance(&mut self, model_id: usize, instance_id: usize) {
-        if !self.is_index_valid(model_id, instance_id) {panic!("Tried to index outside of current model bucket or model bucket doesn't exist")};
-        let global_idx = self.model_buckets[model_id].start_index + instance_id;
-        self.instances.remove(global_idx);
-        self.raw_instances.remove(global_idx);
-        self.model_buckets[model_id].current_len -= 1;
-        // Remove 1 from all later buckets start indices
-        if let Some(buckets_to_shift) = self.model_buckets.get_mut((model_id + 1)..) {
-            for bucket in buckets_to_shift {
-                bucket.start_index -= 1;
-            }
-        }
-    }
-
-    fn is_model_index_valid(&self, model_id: usize) -> bool {
-        if model_id >= self.model_buckets.len() {
-            return false;
-        }
-        return true;
-    }
-
-    fn is_index_valid(&self, model_id: usize, instance_id: usize) -> bool {
-        return self.is_model_index_valid(model_id) && instance_id < self.model_buckets[model_id].current_len;
-    }
-}
-
 // This will store the state of our game
 pub struct State {
     window: Arc<Window>,
@@ -219,7 +40,7 @@ pub struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    model_instances: ModelInstances,
+    model_instances: model::ModelInstances,
     camera: camera::Camera,
     projection: camera::Projection,
     camera_controller: camera::CameraController,
@@ -445,7 +266,7 @@ impl State {
         });
 
         let models = game::GameManager::get_models(&device, &queue, &texture_bind_group_layout);
-        let mut model_instances = ModelInstances::new(&device, models, MAX_INSTANCES);
+        let mut model_instances = model::ModelInstances::new(&device, models, model::MAX_INSTANCES);
         let game_manager = game::GameManager::new(&mut model_instances, 1.0, (10.0, 50.0), 40.0);
 
         let (vertices, indices) = resources::generate_cube(1.0);
