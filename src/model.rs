@@ -164,7 +164,7 @@ impl ModelInstances {
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.raw_instances));
     }
 
-    pub fn add_instance(&mut self, model_id: usize, instance: Instance) {
+    pub fn add_instance(&mut self, model_id: usize, instance: Instance) -> Option<usize> {
         if !self.is_model_index_valid(model_id) {panic!("Model bucket doesn't exist")};
 
         let mut good_to_add = false;
@@ -204,6 +204,9 @@ impl ModelInstances {
                     bucket.start_index += 1;
                 }
             }
+            return Some(insert_index);
+        } else {
+            return Option::None;
         }
     }
 

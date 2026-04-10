@@ -230,7 +230,13 @@ impl State {
             0.0
         );
         let projection =
-        camera::Projection::new(config.width, config.height, 45.0_f32.to_radians(), 0.1, 100.0);
+        camera::Projection::new(
+            config.width,
+            config.height,
+            45.0_f32.to_radians(),
+            0.1,
+            1000.0
+        );
         let camera_controller = camera::CameraController::new(4.0, 1.0, 2.0, false);
         let mut camera_uniform = camera::CameraUniform::new();
         camera_uniform.update_view_proj(&camera, &projection);
@@ -267,7 +273,18 @@ impl State {
 
         let models = game::GameManager::get_models(&device, &queue, &texture_bind_group_layout);
         let mut model_instances = model::ModelInstances::new(&device, models, model::MAX_INSTANCES);
-        let game_manager = game::GameManager::new(&mut model_instances, 1.0, (10.0, 50.0), 40.0);
+        let game_manager = game::GameManager::new(
+            &mut model_instances,
+            1.0,
+            (30.0, 100.0),
+            40.0,
+            100,
+            100.0,
+            100.0,
+            1000.0,
+            3.0,
+            1.0,
+        );
 
         let (vertices, indices) = resources::generate_cube(1.0);
         let light_model = resources::load_model_from_vertices_indices(

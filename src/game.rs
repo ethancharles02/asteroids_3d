@@ -1,4 +1,5 @@
 use glam::{Vec3, Quat};
+use rand::prelude::*;
 use winit::{
     keyboard::{KeyCode},
 };
@@ -9,15 +10,30 @@ const SPACESHIP_MODEL_ID: usize = 0;
 const ASTEROID_MODEL_ID: usize = 1;
 
 pub struct Hitbox {
-    center: Vec3,
-    radii: Vec3,
+    pub center: Vec3,
+    pub radii: Vec3,
+}
+
+impl Hitbox {
 }
 
 pub struct GameObject {
-    position: Vec3,
-    velocity: Vec3,
-    rotation: Vec3,
-    hitbox: Hitbox,
+    pub velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub hitbox: Hitbox,
+}
+
+impl GameObject {
+    pub fn new() -> GameObject {
+        return GameObject {
+            velocity: Vec3::new(0.0, 0.0, 0.0),
+            angular_velocity: Vec3::new(0.0, 0.0, 0.0),
+            hitbox: Hitbox {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                radii: Vec3::new(0.0, 0.0, 0.0)
+            }
+        };
+    }
 }
 
 pub struct GameManager {
@@ -28,6 +44,7 @@ pub struct GameManager {
     player_cur_dspeed: f32,
     player_speed: f32,
     player_min_max_speed: (f32, f32),
+    asteroids: Vec<GameObject>,
 }
 
 impl GameManager {
@@ -42,18 +59,52 @@ impl GameManager {
         return models;
     }
 
-    pub fn new(model_instances: &mut model::ModelInstances, player_roll_sensitivity: f32, player_min_max_speed: (f32, f32), player_dspeed: f32) -> GameManager {
+    pub fn new(
+            model_instances: &mut model::ModelInstances,
+            player_roll_sensitivity: f32,
+            player_min_max_speed: (f32, f32),
+            player_dspeed: f32,
+            num_asteroids: usize,
+            asteroid_border_width: f32,
+            asteroid_border_height: f32,
+            asteroid_border_depth: f32,
+            asteroid_velocity_multiplier: f32,
+            asteroid_angular_velocity_multiplier: f32,
+        ) -> GameManager {
+
+        // Add spaceship
         let spaceship = model::Instance {
-            position: Vec3 { x: 0.0, y: 0.0, z: 0.0},
-            rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
-        };
-        let asteroid = model::Instance {
-            position: Vec3 { x: 0.0, y: -10.0, z: 0.0},
+            position: Vec3 { x: 0.0, y: 0.0, z: -100.0},
             rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
         };
         model_instances.add_instance(SPACESHIP_MODEL_ID, spaceship);
-        model_instances.add_instance(ASTEROID_MODEL_ID, asteroid);
-        GameManager { timer: 0.0, player_droll: player_roll_sensitivity, player_cur_droll: 0.0, player_cur_dspeed: 0.0, player_dspeed, player_speed: player_min_max_speed.0, player_min_max_speed }
+
+        // Add asteroids
+        let mut asteroids = Vec::new();
+        let half_width = asteroid_border_width / 2.0;
+        let half_height = asteroid_border_height / 2.0;
+        let mut rng = rand::rng();
+        for _ in 0..num_asteroids {
+            let x = (rng.random::<f32>() * asteroid_border_width) - half_width;
+            let y = (rng.random::<f32>() * asteroid_border_height) - half_height;
+            let z = rng.random::<f32>() * asteroid_border_depth;
+            let asteroid_instance = model::Instance {
+                position: Vec3 {x, y, z},
+                rotation: Quat::from_axis_angle(Vec3::Z, 0.0_f32.to_radians()),
+            };
+            if let Some(_) = model_instances.add_instance(ASTEROID_MODEL_ID, asteroid_instance) {
+                let mut asteroid = GameObject::new();
+                // Give them random velocities between -0.5 and 0.5 * the multiplier
+                asteroid.angular_velocity.x = (rng.random::<f32>() - 0.5) * asteroid_angular_velocity_multiplier;
+                asteroid.angular_velocity.y = (rng.random::<f32>() - 0.5) * asteroid_angular_velocity_multiplier;
+                asteroid.angular_velocity.z = (rng.random::<f32>() - 0.5) * asteroid_angular_velocity_multiplier;
+                asteroid.velocity.x = (rng.random::<f32>() - 0.5) * asteroid_velocity_multiplier;
+                asteroid.velocity.y = (rng.random::<f32>() - 0.5) * asteroid_velocity_multiplier;
+                asteroid.velocity.z = (rng.random::<f32>() - 0.5) * asteroid_velocity_multiplier;
+                asteroids.push(asteroid);
+            }
+        }
+        GameManager { timer: 0.0, player_droll: player_roll_sensitivity, player_cur_droll: 0.0, player_cur_dspeed: 0.0, player_dspeed, player_speed: player_min_max_speed.0, player_min_max_speed, asteroids }
     }
 
     pub fn update(&mut self, config: &wgpu::SurfaceConfiguration, dt: f32, camera_controller: &mut camera::CameraController, camera: &mut camera::Camera, model_instances: &mut model::ModelInstances) {
@@ -84,11 +135,15 @@ impl GameManager {
             }
         }
 
-        // TODO add dynamic asteroid creation and movement (don't delete asteroids? just move them when they go past the player?)
-        let asteroid_speed = 10.0_f32.to_radians();
-        let asteroid_rotate = Quat::from_axis_angle(Vec3::Y, asteroid_speed * dt);
-        let asteroid = model_instances.get_mut_instance(ASTEROID_MODEL_ID, 0);
-        asteroid.rotation = (asteroid_rotate * asteroid.rotation).normalize();
+        // Update all asteroids
+        for (id, asteroid) in self.asteroids.iter().enumerate() {
+            // let asteroid_speed = 10.0_f32.to_radians();
+            // let asteroid_rotate = Quat::from_axis_angle(Vec3::Y, asteroid_speed * dt);
+            let asteroid_instance = model_instances.get_mut_instance(ASTEROID_MODEL_ID, id);
+            let delta_quat = Quat::from_vec4(asteroid.angular_velocity.extend(0.0) * 0.5 * dt) * asteroid_instance.rotation;
+            asteroid_instance.rotation = (asteroid_instance.rotation + delta_quat).normalize();
+            asteroid_instance.position += asteroid.velocity * dt;
+        }
     }
 
     pub fn reset_active_changes(&mut self) {
